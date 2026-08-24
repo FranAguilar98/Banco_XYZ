@@ -21,7 +21,6 @@ public class Transaccion {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** id original tal como venia en el CSV legacy */
     @Column(name = "id_origen", nullable = false)
     private Long idOrigen;
 

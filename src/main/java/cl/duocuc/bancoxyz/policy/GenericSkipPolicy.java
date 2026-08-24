@@ -26,8 +26,6 @@ public class GenericSkipPolicy implements SkipPolicy {
             }
             return true;
         }
-        // Cualquier otra excepcion inesperada: se tolera hasta el limite tambien,
-        // para no tumbar el Job completo por un error puntual no previsto.
         if (skipCount >= skipLimit) {
             throw new SkipLimitExceededException(skipLimit, t);
         }

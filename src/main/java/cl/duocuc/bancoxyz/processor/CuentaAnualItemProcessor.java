@@ -39,25 +39,21 @@ public class CuentaAnualItemProcessor implements ItemProcessor<CuentaAnualCsv, M
             return rechazar(null, item, "cuenta_id invalido o vacio: '" + item.getCuentaId() + "'");
         }
  
-        // Fecha
         LocalDate fecha = parsearFecha(item.getFecha());
         if (fecha == null) {
             return rechazar(cuentaId, item, "Formato de fecha invalido: '" + item.getFecha() + "'");
         }
  
-        // Descripcion obligatoria
         String descripcion = item.getDescripcion() == null ? "" : item.getDescripcion().trim();
         if (descripcion.isEmpty()) {
             return rechazar(cuentaId, item, "Descripcion vacia o faltante");
         }
  
-        // Tipo de transaccion
         String transaccion = item.getTransaccion() == null ? "" : item.getTransaccion().trim().toLowerCase();
         if (!transaccion.equals("deposito") && !transaccion.equals("retiro") && !transaccion.equals("compra")) {
             return rechazar(cuentaId, item, "Tipo de transaccion invalido: '" + item.getTransaccion() + "'");
         }
  
-        // Monto y coherencia de signo segun el tipo
         BigDecimal monto;
         try {
             monto = new BigDecimal(item.getMonto().trim());
@@ -71,7 +67,6 @@ public class CuentaAnualItemProcessor implements ItemProcessor<CuentaAnualCsv, M
             return rechazar(cuentaId, item, "Un " + transaccion + " debe tener monto negativo: " + monto);
         }
  
-        // Duplicados
         String clave = cuentaId + "|" + fecha + "|" + transaccion + "|" + monto;
         if (!clavesVistas.add(clave)) {
             return rechazar(cuentaId, item, "Movimiento duplicado (cuenta_id+fecha+transaccion+monto repetidos)");
