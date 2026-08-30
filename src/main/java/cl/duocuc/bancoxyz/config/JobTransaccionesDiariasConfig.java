@@ -1,13 +1,13 @@
 package cl.duocuc.bancoxyz.config;
- 
+
 import cl.duocuc.bancoxyz.listener.BatchJobCompletionListener;
 import cl.duocuc.bancoxyz.listener.GenericSkipListener;
 import cl.duocuc.bancoxyz.listener.GenericStepListener;
 import cl.duocuc.bancoxyz.model.ResumenTransaccionDiaria;
 import cl.duocuc.bancoxyz.model.Transaccion;
 import cl.duocuc.bancoxyz.model.TransaccionCsv;
+import cl.duocuc.bancoxyz.partitioners.SimpleGridPartitioner;
 import cl.duocuc.bancoxyz.policy.ChunkCompletionPolicy;
-import cl.duocuc.bancoxyz.policy.GenericRetryPolicy;
 import cl.duocuc.bancoxyz.policy.GenericSkipPolicy;
 import cl.duocuc.bancoxyz.processor.TransaccionItemProcessor;
 import cl.duocuc.bancoxyz.repository.ResumenTransaccionDiariaRepository;
@@ -25,26 +25,28 @@ import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
-import org.springframework.batch.item.support.SynchronizedItemStreamReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.retry.backoff.ExponentialBackOffPolicy;
 import org.springframework.transaction.PlatformTransactionManager;
- 
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
+
 import java.math.BigDecimal;
+import java.sql.SQLTransientException;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
- 
- 
+
+
 @Configuration
 @RequiredArgsConstructor
 @Slf4j
 public class JobTransaccionesDiariasConfig {
- 
+
     private final JobRepository jobRepository;
     private final PlatformTransactionManager transactionManager;
     private final TransaccionItemProcessor transaccionItemProcessor;
@@ -54,26 +56,28 @@ public class JobTransaccionesDiariasConfig {
     private final GenericSkipListener genericSkipListener;
     private final BatchJobCompletionListener batchJobCompletionListener;
     private final TaskExecutor batchTaskExecutor;
- 
+    private final SimpleGridPartitioner simpleGridPartitioner;
+
     @Value("${app.batch.input.transacciones}")
     private Resource transaccionesResource;
- 
+
     @Value("${app.batch.chunk-size:5}")
     private int chunkSize;
- 
+
     @Value("${app.batch.skip-limit:20}")
     private int skipLimit;
- 
+
+    private static final int GRID_SIZE = 3;
     private static final long CHUNK_MAX_DURATION_MS = 2000;
     private static final int RETRY_LIMIT = 3;
- 
- 
+
+
     @Bean
     public FlatFileItemReader<TransaccionCsv> transaccionItemReader() {
         return new FlatFileItemReaderBuilder<TransaccionCsv>()
                 .name("transaccionItemReader")
                 .resource(transaccionesResource)
-                .linesToSkip(1) // encabezado: id,fecha,monto,tipo
+                .linesToSkip(1)
                 .delimited()
                 .names("id", "fecha", "monto", "tipo")
                 .fieldSetMapper(new BeanWrapperFieldSetMapper<>() {{
@@ -81,59 +85,63 @@ public class JobTransaccionesDiariasConfig {
                 }})
                 .build();
     }
- 
-    @Bean
-    public SynchronizedItemStreamReader<TransaccionCsv> transaccionItemReaderSincronizado() {
-        SynchronizedItemStreamReader<TransaccionCsv> reader = new SynchronizedItemStreamReader<>();
-        reader.setDelegate(transaccionItemReader());
-        return reader;
-    }
- 
+
     @Bean
     public ItemWriter<Transaccion> transaccionItemWriter() {
         return chunk -> transaccionRepository.saveAll(chunk.getItems());
     }
- 
+
     @Bean
     public Step stepCargaTransacciones() {
         return new StepBuilder("stepCargaTransacciones", jobRepository)
                 .<TransaccionCsv, Transaccion>chunk(
                         new ChunkCompletionPolicy(chunkSize, CHUNK_MAX_DURATION_MS),
                         transactionManager)
-                .reader(transaccionItemReaderSincronizado())
+                .reader(transaccionItemReader())
                 .processor(transaccionItemProcessor)
                 .writer(transaccionItemWriter())
-                .taskExecutor(batchTaskExecutor)
                 .faultTolerant()
                 .skipPolicy(new GenericSkipPolicy(skipLimit))
-                .retryPolicy(new GenericRetryPolicy(RETRY_LIMIT))
+                .retry(SQLTransientException.class)
+                .retryLimit(RETRY_LIMIT)
+                .backOffPolicy(new ExponentialBackOffPolicy())
                 .listener(genericSkipListener)
                 .listener(new GenericStepListener())
                 .build();
     }
- 
- 
+
+    @Bean
+    public Step masterStepTransacciones() {
+        return new StepBuilder("masterStepTransacciones", jobRepository)
+                .partitioner("stepCargaTransacciones", simpleGridPartitioner)
+                .step(stepCargaTransacciones())
+                .gridSize(GRID_SIZE)
+                .taskExecutor(batchTaskExecutor)
+                .build();
+    }
+
+
     @Bean
     public Tasklet resumenDiarioTasklet() {
         return (contribution, chunkContext) -> {
             List<Transaccion> todas = transaccionRepository.findAll();
- 
+
             Map<LocalDate, List<Transaccion>> porFecha = todas.stream()
                     .collect(Collectors.groupingBy(Transaccion::getFecha));
- 
+
             long totalAnomalias = transaccionAnomaliaRepository.count();
- 
+
             porFecha.forEach((fecha, lista) -> {
                 BigDecimal totalDebito = lista.stream()
                         .filter(t -> "debito".equals(t.getTipo()))
                         .map(Transaccion::getMonto)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
- 
+
                 BigDecimal totalCredito = lista.stream()
                         .filter(t -> "credito".equals(t.getTipo()))
                         .map(Transaccion::getMonto)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
- 
+
                 resumenRepository.save(ResumenTransaccionDiaria.builder()
                         .fecha(fecha)
                         .totalDebito(totalDebito)
@@ -142,29 +150,29 @@ public class JobTransaccionesDiariasConfig {
                         .cantidadAnomalias((int) totalAnomalias)
                         .build());
             });
- 
+
             log.info("Resumen diario generado para {} fechas. Anomalias totales detectadas: {}",
                     porFecha.size(), totalAnomalias);
- 
+
             return org.springframework.batch.repeat.RepeatStatus.FINISHED;
         };
     }
- 
+
     @Bean
     public Step stepResumenDiario() {
         return new StepBuilder("stepResumenDiario", jobRepository)
                 .tasklet(resumenDiarioTasklet(), transactionManager)
                 .build();
     }
- 
- 
+
+
     @Bean
     public Job reporteTransaccionesDiariasJob() {
         return new JobBuilder("reporteTransaccionesDiariasJob", jobRepository)
+                .incrementer(new RunIdIncrementer())
                 .listener(batchJobCompletionListener)
-                .start(stepCargaTransacciones())
+                .start(masterStepTransacciones())
                 .next(stepResumenDiario())
                 .build();
     }
 }
- 

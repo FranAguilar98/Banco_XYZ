@@ -5,8 +5,7 @@ import org.springframework.batch.core.step.skip.SkipLimitExceededException;
 import org.springframework.batch.core.step.skip.SkipPolicy;
 import org.springframework.batch.item.file.FlatFileParseException;
  
-import java.sql.SQLException;
- 
+
 public class GenericSkipPolicy implements SkipPolicy {
  
     private final int skipLimit;
@@ -17,18 +16,10 @@ public class GenericSkipPolicy implements SkipPolicy {
  
     @Override
     public boolean shouldSkip(Throwable t, long skipCount) throws SkipLimitExceededException {
-        if (t instanceof SQLException) {
+        if (skipCount >= skipLimit) {
             return false;
         }
-        if (t instanceof DatoInvalidoException || t instanceof FlatFileParseException) {
-            if (skipCount >= skipLimit) {
-                throw new SkipLimitExceededException(skipLimit, t);
-            }
-            return true;
-        }
-        if (skipCount >= skipLimit) {
-            throw new SkipLimitExceededException(skipLimit, t);
-        }
-        return true;
+        return t instanceof DatoInvalidoException
+                || t instanceof FlatFileParseException;
     }
 }

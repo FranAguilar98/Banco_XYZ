@@ -24,6 +24,12 @@ spring:
     job:
       enabled: false
 
+bancoxyz:
+  particion:
+    core-pool-size: 3
+    max-pool-size: 3
+    queue-capacity: 10
+
 app:
   batch:
     input:
