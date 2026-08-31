@@ -37,7 +37,7 @@ app:
       intereses: classpath:data/intereses.csv
       cuentas-anuales: classpath:data/cuentas_anuales.csv
     chunk-size: 5
-    skip-limit: 20
+    skip-limit: 500
 
 logging:
   level:

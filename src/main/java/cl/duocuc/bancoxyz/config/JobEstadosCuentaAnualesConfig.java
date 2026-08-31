@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -33,6 +34,7 @@ import org.springframework.core.task.TaskExecutor;
 import org.springframework.retry.backoff.ExponentialBackOffPolicy;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.repeat.RepeatStatus;
 
 import java.math.BigDecimal;
 import java.sql.SQLTransientException;
@@ -72,17 +74,27 @@ public class JobEstadosCuentaAnualesConfig {
     private static final int RETRY_LIMIT = 3;
 
     @Bean
-    public FlatFileItemReader<CuentaAnualCsv> cuentaAnualItemReader() {
-        return new FlatFileItemReaderBuilder<CuentaAnualCsv>()
+    @StepScope
+    public FlatFileItemReader<CuentaAnualCsv> cuentaAnualItemReader(
+            @Value("#{stepExecutionContext['linesToSkip']}") Integer linesToSkip,
+            @Value("#{stepExecutionContext['maxItemCount']}") Integer maxItemCount) {
+
+        FlatFileItemReader<CuentaAnualCsv> reader = new FlatFileItemReaderBuilder<CuentaAnualCsv>()
                 .name("cuentaAnualItemReader")
                 .resource(cuentasAnualesResource)
-                .linesToSkip(1)
+                .linesToSkip(linesToSkip != null ? linesToSkip : 1)
                 .delimited()
                 .names("cuentaId", "fecha", "transaccion", "monto", "descripcion")
                 .fieldSetMapper(new BeanWrapperFieldSetMapper<>() {{
                     setTargetType(CuentaAnualCsv.class);
                 }})
                 .build();
+
+        if (maxItemCount != null) {
+            reader.setMaxItemCount(maxItemCount);
+        }
+
+        return reader;
     }
 
     @Bean
@@ -96,7 +108,7 @@ public class JobEstadosCuentaAnualesConfig {
                 .<CuentaAnualCsv, MovimientoAnual>chunk(
                         new ChunkCompletionPolicy(chunkSize, CHUNK_MAX_DURATION_MS),
                         transactionManager)
-                .reader(cuentaAnualItemReader())
+                .reader(cuentaAnualItemReader(null, null))
                 .processor(cuentaAnualItemProcessor)
                 .writer(movimientoAnualItemWriter())
                 .faultTolerant()
@@ -124,6 +136,11 @@ public class JobEstadosCuentaAnualesConfig {
         return (contribution, chunkContext) -> {
             List<MovimientoAnual> movimientos = movimientoAnualRepository.findAll();
             long totalAnomalias = movimientoAnualAnomaliaRepository.count();
+
+           
+            for (int i = 0; i < movimientos.size(); i++) {
+                contribution.incrementReadCount();
+            }
 
             Map<String, List<MovimientoAnual>> porCuentaYAnio = movimientos.stream()
                     .collect(Collectors.groupingBy(m -> m.getCuentaId() + "-" + m.getFecha().getYear()));
@@ -155,12 +172,14 @@ public class JobEstadosCuentaAnualesConfig {
                         .cantidadAnomalias((int) totalAnomalias)
                         .fechaGeneracion(LocalDate.now())
                         .build());
+
+                contribution.incrementWriteCount(1);
             });
 
             log.info("Estados de cuenta anuales generados para {} combinaciones cuenta/anio. Anomalias totales: {}",
                     porCuentaYAnio.size(), totalAnomalias);
 
-            return org.springframework.batch.repeat.RepeatStatus.FINISHED;
+            return RepeatStatus.FINISHED;
         };
     }
 
