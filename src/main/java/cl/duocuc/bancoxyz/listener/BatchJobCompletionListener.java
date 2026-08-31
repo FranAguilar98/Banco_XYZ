@@ -7,10 +7,11 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.stereotype.Component;
 
-
 @Component
 @Slf4j
 public class BatchJobCompletionListener implements JobExecutionListener {
+
+    private static final String PREFIJO_STEP_MAESTRO = "masterStep";
 
     @Override
     public void beforeJob(JobExecution jobExecution) {
@@ -37,10 +38,8 @@ public class BatchJobCompletionListener implements JobExecutionListener {
                     step.getSkipCount(),
                     step.getStatus());
 
-            boolean esStepMaestroParticionado = jobExecution.getStepExecutions().stream()
-                    .anyMatch(s -> s.getStepName().equals(step.getStepName() + ":partition0"));
-
-            if (!esStepMaestroParticionado) {
+            boolean esStepMaestro = step.getStepName().startsWith(PREFIJO_STEP_MAESTRO);
+            if (!esStepMaestro) {
                 totalLeidos += step.getReadCount();
                 totalEscritos += step.getWriteCount();
                 totalSaltados += step.getSkipCount();
